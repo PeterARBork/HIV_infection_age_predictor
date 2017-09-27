@@ -159,7 +159,9 @@ def parse_pileup(pileup_filename: str) -> pd.DataFrame:
     df = df.dropna(subset=['nucleotides'])
 
     def pileup_bases_to_clean_bases(pileup_df_row: pd.Series) -> str:
-        reference = pileup_df_row['reference'].upper()
+        reference = pileup_df_row['reference']
+        if not type(reference) is str:
+            raise ValueError('location %d has non-string reference.' % pileup_df_row.location)
         pileup_nucleotides = {',': reference,
                               '.': reference,
                               'a': 'A', 'A': 'A',
