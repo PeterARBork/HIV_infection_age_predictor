@@ -158,10 +158,16 @@ def parse_pileup(pileup_filename: str) -> pd.DataFrame:
     empty_locations = df.location[df.nucleotides == np.nan]
     df = df.dropna(subset=['nucleotides'])
 
+    # Keep only valid reference letters.
+    bad_ref_locations = df.location[~df.reference.isin(['A', 'C', 'G', 'T', 'a', 'c', 'g', 't'])]
+    if len(bad_ref_locations) > 0:
+        logging.warning('Pileup file %s has %d locations with bad reference, which will be dropped (%s).'
+                        % (pileup_filename, len(bad_ref_locations), ', '.join(list(bad_ref_locations))))
+        df = df[df.reference.notnull()]
+
+
     def pileup_bases_to_clean_bases(pileup_df_row: pd.Series) -> str:
-        reference = pileup_df_row['reference']
-        if not type(reference) is str:
-            raise ValueError('location %d has non-string reference.' % pileup_df_row.location)
+        reference = pileup_df_row['reference'].upper()
         pileup_nucleotides = {',': reference,
                               '.': reference,
                               'a': 'A', 'A': 'A',
