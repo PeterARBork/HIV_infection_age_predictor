@@ -42,7 +42,7 @@ def main():
 
     :return: 0 for successfully completed run, otherwise -1
     """
-    logging.basicConfig(filename='hammings.log', level=logging.INFO)
+    logging.basicConfig(filename='hammings.log', level=logging.DEBUG)
     logging.info('Program started.')
     logging.info('Using intercept %.3f, slope %.3f and threshold %.3f'
                  % (INTERCEPT, SLOPE, THRESHOLD))
@@ -54,7 +54,11 @@ def main():
     for mpileup in relevant_mpileup_files:
         identifier = read_identifier(mpileup)
         reference_genome = read_reference_genome(mpileup)
-        average_hamming_distance, predicted_age = predict_age(mpileup)
+        try:
+            average_hamming_distance, predicted_age = predict_age(mpileup)
+        except Exception as e:
+            logging.error('File %s gave error.' %mpileup)
+            raise e
 
         add_prediction_to_csv(identifier, reference_genome,
                               average_hamming_distance, predicted_age)
@@ -122,9 +126,13 @@ def predict_age(mpileup_filename: str):
     :param mpileup_filename: string filename (without path).
     :return: float predicted age of infection in years.
     """
-    pileup_data = parse_pileup(mpileup_filename)
+    pileup_data, empty_locations = parse_pileup(mpileup_filename)
     average_hamming = calculate_average_hamming_distance(pileup_data)
     predicted_age = round(average_hamming * SLOPE + INTERCEPT, 1)
+
+    if len(empty_locations) != 0:
+        logging.debug('In %s, %d of the relevant locations had zero depth.'
+                      % (mpileup_filename, len(empty_locations)))
     
     return average_hamming, predicted_age
 
@@ -143,50 +151,52 @@ def parse_pileup(pileup_filename: str) -> pd.DataFrame:
                      names=['location', 'reference', 'depth', 'nucleotides'], dtype=object)  # , index_col=0)
 
     logging.debug('Out of (%d - %d) / %d = %d  expected bases in pol, we have %d bases covered in the pileup.'
-          % (pol_end, pol_start, 3, (pol_end - pol_start) / 3, sum(df.location.isin(locations_to_include))))
+                  % (pol_end, pol_start, 3, (pol_end - pol_start) / 3, sum(df.location.isin(locations_to_include))))
 
     # keep only 3rd base in codons
     df = df[df.location.isin(locations_to_include)]
+    empty_locations = df.location[df.nucleotides == np.nan]
+    df = df.dropna(subset=['nucleotides'])
 
     def pileup_bases_to_clean_bases(pileup_df_row: pd.Series) -> str:
-        reference = pileup_df_row['reference']
+        reference = pileup_df_row['reference'].upper()
         pileup_nucleotides = {',': reference,
                               '.': reference,
-                              'a': 'A',
-                              'c': 'C',
-                              't': 'T',
-                              'g': 'G'}
+                              'a': 'A', 'A': 'A',
+                              'c': 'C', 'C': 'C',
+                              't': 'T', 'T': 'T',
+                              'g': 'G', 'G': 'G'}
         result = ''
-        try:
-            for letter in pileup_df_row.nucleotides:
-                result += pileup_nucleotides.get(letter, '')
-        except TypeError as te:
-            if pileup_df_row['nucleotides'] is np.nan:
-                logging.debug('Lost a line because it was nan, line is:')
-                logging.debug(pileup_df_row)
-            else:
-                raise te
+        for letter in pileup_df_row.nucleotides:
+            result += pileup_nucleotides.get(letter, '')
 
         return result
 
     df['tidy_bases'] = df.apply(pileup_bases_to_clean_bases, axis=1)
     df = df.drop('nucleotides', axis=1)
 
+
     def calculate_nucleotide_frequency(pileup_df_row, nucleotide: str) -> float:
         num_occurences = pileup_df_row.tidy_bases.count(nucleotide)
         depth = len(pileup_df_row.tidy_bases)
-        return num_occurences / depth
+        try:
+            freq = num_occurences / depth
+            return freq
+        except ZeroDivisionError as zde:
+            logging.warning('Got ZeroDivisionError on location %s' % pileup_df_row['location'])
+            return None
 
     for nucleotide in ['A', 'C', 'G', 'T']:
         df['%s_freq' % nucleotide] = df.apply(calculate_nucleotide_frequency, axis=1, nucleotide=nucleotide)
 
     df['freqs_sum'] = df.apply(lambda row: row['A_freq'] + row['C_freq'] + row['G_freq'] + row['T_freq'], axis=1)
 
-    percent_with_wrong_frequency_sum = len(df[df['freqs_sum'] != 1.0]) / len(df) * 100
-    logging.debug('There are %d%s rows where the frequencies do not sum to one, perhaps because of rounding.'
-          % (percent_with_wrong_frequency_sum, '%'))
+    percent_with_wrong_frequency_sum = len(df[abs(df['freqs_sum'] - 1) > 0.01]) / len(df) * 100
+    if percent_with_wrong_frequency_sum > 1:
+        logging.debug('There are %d%s rows where the frequencies do not sum to one, perhaps because of rounding.'
+                      % (percent_with_wrong_frequency_sum, '%'))
 
-    return df
+    return df, empty_locations
 
 def calculate_average_hamming_distance(parsed_pileup_df: pd.DataFrame) -> float:
     """ Predicts Hamming distance on dataframe from pileup file.
