@@ -34,6 +34,9 @@ import numpy as np
 SLOPE = 250.28
 INTERCEPT = -0.08
 THRESHOLD = 0.0
+POL_START = 2085
+POL_END = 5096
+LOCATIONS_TO_INCLUDE = [str(loc) for loc in list(range(POL_START, POL_END, 3))]
 
 def main():
     """ Predicts ages of infection for all .mpileups in program's folder.
@@ -56,11 +59,8 @@ def main():
         reference_genome = read_reference_genome(mpileup)
         try:
             average_hamming_distance, predicted_age = predict_age(mpileup)
-        except pd.errors.ParserError:
-            logging.error('Files %s gave parser error, ignoring and continuing.' % mpileup)
-            continue
         except Exception as e:
-            logging.error('File %s gave error.' % mpileup)
+            logging.error('File %s gave error: %s.' % (mpileup, e.args))
             raise e
 
         add_prediction_to_csv(identifier, reference_genome,
@@ -140,8 +140,28 @@ def predict_age(mpileup_filename: str):
     return average_hamming, predicted_age
 
 def verify_pileup_df(pileup_df: pd.DataFrame) -> None:
-    """ Verifies pileup dataframe and throws ValueError if errors are found. """
+    """ #TODO: STUB! Verifies pileup dataframe and throws ValueError if errors are found. """
     return None
+
+def handheld_pileup_parsing(pileup_filename: str) -> pd.DataFrame:
+    """ Parses mpileup carefully to avoid errors when first line has empty columns. """
+
+    def line_to_record(line: str) -> dict:
+        values = line.strip('\n').split('\t')
+        if len(values) != 6:
+            logging.warning('%d values found in line: %s.' % (len(values), line))
+            return dict()
+
+        col_names = ['disregard', 'location', 'reference', 'depth', 'nucleotides', 'qualities']
+        return {col_name: value for col_name, value in zip(col_names, values)}
+
+    def location_filter(record: dict):
+        return True if record.get('location', 'missing') in LOCATIONS_TO_INCLUDE else False
+
+    with open(pileup_filename, 'r') as f:
+        contents = list(filter(location_filter, map(line_to_record, f)))
+
+    return pd.DataFrame(contents)
 
 def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
     """ Returns dataframe with frequencies from pileup file.
@@ -149,27 +169,17 @@ def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
     :param pileup_filename: string filename.
     :return: pandas dataframe.
     """
-    pol_start = 2085
-    pol_end = 5096
-    locations_to_include = [str(loc) for loc in list(range(pol_start, pol_end, 3))]
 
-    # Rows in pandas are likely 0-indexed whereas the first row in the file is location 1 in the genome
-    try:
-        df = pd.read_csv(pileup_filename, delim_whitespace=True, header=None, dtype=object)
-    except pd.errors.ParserError as pe:
-        logging.error('Could not parse %s. Error was %s'
-                      % (pileup_filename, pe.args))
-        raise pe
-    df.columns = ['disregard', 'location', 'reference', 'depth', 'nucleotides', 'qualities']
+    df = handheld_pileup_parsing(pileup_filename)
     df = df[['location', 'reference', 'depth', 'nucleotides']]
 
     verify_pileup_df(df)
 
     logging.debug('Out of (%d - %d) / %d = %d  expected bases in pol, we have %d bases covered in the pileup.'
-                  % (pol_end, pol_start, 3, (pol_end - pol_start) / 3, sum(df.location.isin(locations_to_include))))
+                  % (POL_END, POL_START, 3, (POL_END - POL_START) / 3, sum(df.location.isin(LOCATIONS_TO_INCLUDE ))))
 
     # keep only 3rd base in codons
-    df = df[df.location.isin(locations_to_include)]
+    df = df[df.location.isin(LOCATIONS_TO_INCLUDE )]
     empty_locations = df.location[df.nucleotides == np.nan]
     df = df.dropna(subset=['nucleotides'])
 
