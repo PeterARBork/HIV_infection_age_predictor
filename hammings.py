@@ -37,6 +37,8 @@ THRESHOLD = 0.0
 POL_START = 2085
 POL_END = 5096
 LOCATIONS_TO_INCLUDE = [str(loc) for loc in list(range(POL_START, POL_END, 3))]
+RESULTS_FILE = 'predicted_ages.csv'
+LOG_FILE = 'age_prediction_for_hiv.log'
 
 def main():
     """ Predicts ages of infection for all .mpileups in program's folder.
@@ -45,7 +47,7 @@ def main():
 
     :return: 0 for successfully completed run, otherwise -1
     """
-    logging.basicConfig(filename='age_prediction_for_hiv.log', level=logging.DEBUG)
+    logging.basicConfig(filename=LOG_FILE, level=logging.DEBUG)
     logging.info('Program started.')
     logging.info('Using intercept %.3f, slope %.3f and threshold %.3f'
                  % (INTERCEPT, SLOPE, THRESHOLD))
@@ -284,7 +286,7 @@ def add_prediction_to_csv(identifier: str, reference_genome: str,
     :param reference_genome: string name of reference genome for mpileup file.
     :return: None
     """
-    with open('predicted_ages.csv', mode='a') as f:
+    with open(RESULTS_FILE, mode='a') as f:
         observation = ','.join([identifier, reference_genome,
                                 str(average_hamming_distance), str(predicted_age),
                                 str(avg_depth), str(num_positions_covered)])
