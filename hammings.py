@@ -58,6 +58,7 @@ def main():
             average_hamming_distance, predicted_age = predict_age(mpileup)
         except pd.errors.ParserError as pe:
             logging.error('Files %s gave parser error, ignoring and continuing.' % mpileup)
+            continue
         except Exception as e:
             logging.error('File %s gave error.' % mpileup)
             raise e
