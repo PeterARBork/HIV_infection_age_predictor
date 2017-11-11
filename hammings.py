@@ -157,7 +157,9 @@ def handheld_pileup_parsing(pileup_filename: str) -> pd.DataFrame:
         return {col_name: value for col_name, value in zip(col_names, values)}
 
     def location_filter(record: dict):
-        return True if record.get('location', 'missing') in LOCATIONS_TO_INCLUDE else False
+        location_criteria = record.get('location', 'missing') in LOCATIONS_TO_INCLUDE
+        content_criteria = len(record.get('nucleotides', '')) > 0 and len(record.get('qualities', '')) > 0
+        return True if location_criteria and content_criteria else False
 
     with open(pileup_filename, 'r') as f:
         contents = list(filter(location_filter, map(line_to_record, f)))
@@ -239,6 +241,7 @@ def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
         logging.debug('There are %d%s rows where the frequencies do not sum to one, perhaps because of rounding.'
                       % (percent_with_wrong_frequency_sum, '%'))
 
+    df = df.dropna()
     return df, empty_locations
 
 def calculate_average_hamming_distance(parsed_pileup_df: pd.DataFrame) -> float:
