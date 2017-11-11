@@ -10,4 +10,4 @@ Assumes Python version >= 3.5
 # Usage
 Place hammings.py in folder with .mpileup files and execute from command-line.
 
-Optionally set intercept, slope and threshold in the script hard-coding.
+Optionally set intercept, slope and threshold in the script by hard-coding your settings in the first few lines.
