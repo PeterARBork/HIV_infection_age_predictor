@@ -55,6 +55,7 @@ def main():
 
     logging.info('Starting calculations on each mpileup file.')
     for mpileup in relevant_mpileup_files:
+        logging.info('Now working on %s.' % mpileup)
         identifier = read_identifier(mpileup)
         reference_genome = read_reference_genome(mpileup)
         try:
