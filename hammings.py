@@ -62,7 +62,7 @@ def main():
             average_hamming_distance, predicted_age = predict_age(mpileup)
         except Exception as e:
             logging.error('File %s gave error: %s.' % (mpileup, e.args))
-            raise e
+            continue
 
         add_prediction_to_csv(identifier, reference_genome,
                               average_hamming_distance, predicted_age)
@@ -161,6 +161,9 @@ def handheld_pileup_parsing(pileup_filename: str) -> pd.DataFrame:
 
     with open(pileup_filename, 'r') as f:
         contents = list(filter(location_filter, map(line_to_record, f)))
+
+    if len(contents) == 0:
+        logging.warning('No nuclotide locations match criteria in %s.' % pileup_filename)
 
     return pd.DataFrame(contents)
 
