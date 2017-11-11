@@ -56,7 +56,7 @@ def main():
         reference_genome = read_reference_genome(mpileup)
         try:
             average_hamming_distance, predicted_age = predict_age(mpileup)
-        except pd.errors.ParserError as pe:
+        except pd.errors.ParserError:
             logging.error('Files %s gave parser error, ignoring and continuing.' % mpileup)
             continue
         except Exception as e:
@@ -201,6 +201,7 @@ def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
         logging.error('Could not tidy bases. The dataframe read has the following columns:\n%s\n'
                       'The first five rows looks like this:\n%s'
                       % (df.columns, df.head()))
+        raise ve
     df = df.drop('nucleotides', axis=1)
 
 
