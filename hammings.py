@@ -42,7 +42,7 @@ def main():
 
     :return: 0 for successfully completed run, otherwise -1
     """
-    logging.basicConfig(filename='hammings.log', level=logging.DEBUG)
+    logging.basicConfig(filename='age_prediction_for_hiv.log', level=logging.DEBUG)
     logging.info('Program started.')
     logging.info('Using intercept %.3f, slope %.3f and threshold %.3f'
                  % (INTERCEPT, SLOPE, THRESHOLD))
@@ -136,7 +136,7 @@ def predict_age(mpileup_filename: str):
     
     return average_hamming, predicted_age
 
-def parse_pileup(pileup_filename: str) -> pd.DataFrame:
+def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
     """ Returns dataframe with frequencies from pileup file.
 
     :param pileup_filename: string filename.
@@ -180,7 +180,12 @@ def parse_pileup(pileup_filename: str) -> pd.DataFrame:
 
         return result
 
-    df['tidy_bases'] = df.apply(pileup_bases_to_clean_bases, axis=1)
+    try:
+        df['tidy_bases'] = df.apply(pileup_bases_to_clean_bases, axis=1)
+    except ValueError as ve:
+        logging.error('Could not tidy bases. The dataframe read has the following columns:\n%s\n'
+                      'The first five rows looks like this:\n%s'
+                      % (df.columns, df.head()))
     df = df.drop('nucleotides', axis=1)
 
 
