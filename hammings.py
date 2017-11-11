@@ -56,8 +56,10 @@ def main():
         reference_genome = read_reference_genome(mpileup)
         try:
             average_hamming_distance, predicted_age = predict_age(mpileup)
+        except pd.errors.ParserError as pe:
+            logging.error('Files %s gave parser error, ignoring and continuing.' % mpileup)
         except Exception as e:
-            logging.error('File %s gave error.' %mpileup)
+            logging.error('File %s gave error.' % mpileup)
             raise e
 
         add_prediction_to_csv(identifier, reference_genome,
@@ -136,6 +138,10 @@ def predict_age(mpileup_filename: str):
     
     return average_hamming, predicted_age
 
+def verify_pileup_df(pileup_df: pd.DataFrame) -> None:
+    """ Verifies pileup dataframe and throws ValueError if errors are found. """
+    return None
+
 def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
     """ Returns dataframe with frequencies from pileup file.
 
@@ -147,8 +153,16 @@ def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
     locations_to_include = [str(loc) for loc in list(range(pol_start, pol_end, 3))]
 
     # Rows in pandas are likely 0-indexed whereas the first row in the file is location 1 in the genome
-    df = pd.read_csv(pileup_filename, delim_whitespace=True, header=None, usecols=[1, 2, 3, 4],
-                     names=['location', 'reference', 'depth', 'nucleotides'], dtype=object)  # , index_col=0)
+    try:
+        df = pd.read_csv(pileup_filename, delim_whitespace=True, header=None, dtype=object)
+    except pd.errors.ParserError as pe:
+        logging.error('Could not parse %s. Error was %s'
+                      % (pileup_filename, pe.args))
+        raise pe
+    df.columns = ['disregard', 'location', 'reference', 'depth', 'nucleotides', 'qualities']
+    df = df[['location', 'reference', 'depth', 'nucleotides']]
+
+    verify_pileup_df(df)
 
     logging.debug('Out of (%d - %d) / %d = %d  expected bases in pol, we have %d bases covered in the pileup.'
                   % (pol_end, pol_start, 3, (pol_end - pol_start) / 3, sum(df.location.isin(locations_to_include))))
