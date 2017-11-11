@@ -59,13 +59,15 @@ def main():
         identifier = read_identifier(mpileup)
         reference_genome = read_reference_genome(mpileup)
         try:
-            average_hamming_distance, predicted_age = predict_age(mpileup)
+            (average_hamming_distance, predicted_age,
+             avg_depth, num_positions_covered) = predict_age(mpileup)
         except Exception as e:
             logging.error('File %s gave error: %s.' % (mpileup, e.args))
             continue
 
         add_prediction_to_csv(identifier, reference_genome,
-                              average_hamming_distance, predicted_age)
+                              average_hamming_distance, predicted_age,
+                              avg_depth, num_positions_covered)
         logging.info('Predicted age %s from Hamming distance %.3f for identifier %s (reference %s).'
                      % (predicted_age, average_hamming_distance, identifier, reference_genome))
 
@@ -133,12 +135,15 @@ def predict_age(mpileup_filename: str):
     pileup_data, empty_locations = parse_pileup(mpileup_filename)
     average_hamming = calculate_average_hamming_distance(pileup_data)
     predicted_age = round(average_hamming * SLOPE + INTERCEPT, 1)
+    avg_depth = pd.to_numeric(pileup_data.depth).mean()
+    num_positions_covered = len(pileup_data)
 
     if len(empty_locations) != 0:
-        logging.debug('In %s, %d of the relevant locations had zero depth.'
-                      % (mpileup_filename, len(empty_locations)))
+        logging.debug('In %s, %d of the relevant locations had zero depth '
+                      '(%d were covered with %.2f average depth).'
+                      % (mpileup_filename, len(empty_locations), num_positions_covered, avg_depth))
     
-    return average_hamming, predicted_age
+    return average_hamming, predicted_age, avg_depth, num_positions_covered
 
 def verify_pileup_df(pileup_df: pd.DataFrame) -> None:
     """ #TODO: STUB! Verifies pileup dataframe and throws ValueError if errors are found. """
@@ -185,8 +190,8 @@ def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
                   % (POL_END, POL_START, 3, (POL_END - POL_START) / 3, sum(df.location.isin(LOCATIONS_TO_INCLUDE ))))
 
     # keep only 3rd base in codons
-    df = df[df.location.isin(LOCATIONS_TO_INCLUDE )]
-    empty_locations = df.location[df.nucleotides == np.nan]
+    df = df[df.location.isin(LOCATIONS_TO_INCLUDE)]
+    empty_locations = list(set(LOCATIONS_TO_INCLUDE) - set(df.location.unique()))
     df = df.dropna(subset=['nucleotides'])
 
     # Keep only valid reference letters.
@@ -271,7 +276,8 @@ def calculate_average_hamming_distance(parsed_pileup_df: pd.DataFrame) -> float:
     return average_hammond_distance
 
 def add_prediction_to_csv(identifier: str, reference_genome: str,
-                          average_hamming_distance: float, predicted_age: float):
+                          average_hamming_distance: float, predicted_age: float,
+                          avg_depth, num_positions_covered):
     """ Adds prediction to predicted_ages.csv in same folder as this script.
 
     :param identifier: string identifier for mpileup file
@@ -280,7 +286,8 @@ def add_prediction_to_csv(identifier: str, reference_genome: str,
     """
     with open('predicted_ages.csv', mode='a') as f:
         observation = ','.join([identifier, reference_genome,
-                                str(average_hamming_distance), str(predicted_age)])
+                                str(average_hamming_distance), str(predicted_age),
+                                str(avg_depth), str(num_positions_covered)])
         f.write(observation + '\n')
 
     return None
