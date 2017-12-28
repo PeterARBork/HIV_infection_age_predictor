@@ -30,6 +30,7 @@ from pathlib import Path
 from os import listdir
 import pandas as pd
 import numpy as np
+from typing import List
 
 SLOPE = 250.28
 INTERCEPT = -0.08
@@ -39,6 +40,20 @@ POL_END = 5096
 LOCATIONS_TO_INCLUDE = [str(loc) for loc in list(range(POL_START, POL_END, 3))]
 RESULTS_FILE = 'predicted_ages.csv'
 LOG_FILE = 'age_prediction_for_hiv.log'
+
+def count_depths():
+    """ Counts depths """
+    relevant_mpileup_files = get_relevant_mpileup_files()
+    for mpileup in relevant_mpileup_files:
+        line_dicts = handheld_pileup_parsing(mpileup)
+        try:
+            pos_depths = [(d['location'], d['depth']) for d in line_dicts]
+        except TypeError as te:
+            logging.error('In pileup %s we got TypeError: %s' % (mpileup, te.args))
+            continue
+        pos_dicts = {pos: depth for (pos, depth) in pos_depths}
+        pos_dicts['AA_filename'] = mpileup
+        add_prediction_to_csv(**pos_dicts)
 
 def main():
     """ Predicts ages of infection for all .mpileups in program's folder.
@@ -155,7 +170,7 @@ def predict_age(pileup_data: pd.DataFrame):
     return average_hamming, predicted_age
 
 def calculate_jcdistance(pileup_df: pd.DataFrame) -> float:
-    """ Calculates Jukes-Cantor distance estimate of number of changes.
+    """ Calculates days since infection using Jukes-Cantor 1969.
 
     In the Jules-Cantor model, the frequency of mutants at a given location is
     f = (3/4) - (3/4) * exp(-mu * t),
@@ -173,9 +188,8 @@ def calculate_jcdistance(pileup_df: pd.DataFrame) -> float:
 
     See https://en.wikipedia.org/wiki/Models_of_DNA_evolution#Most_common_models_of_DNA_evolution
 
-    :param: pileup_df: pandas dataframe either with 'hamming' and 'reference' columns or which can be used in this
-    module's calculate_average_pairwise_distance().
-    :return: Jules-Cantor distance calculated using the hamming-based p-distance
+    :param: pileup_df: pandas dataframe either with 'reference' and 'X_freq' for each base
+    :return: Years since infected averaged over all locations
     """
     pileup_df = pileup_df[pileup_df['reference'].isin(['A', 'C', 'T', 'G'])]
     ref_freq = lambda row: row['%s_freq' % row['reference']]
@@ -190,11 +204,22 @@ def calculate_jcdistance(pileup_df: pd.DataFrame) -> float:
 
     return avg_jc_t
 
+def calculate_felsenstein_distance(pileup_df: pd.DataFrame) -> float:
+    """ Calculates days since infection uing Felsenstein 1981.
+
+    Using
+    b = 1 / (1 - A^2 - C^2 - G^2 - T^2),
+    (with A, C, G and T being the base frequencies), Felsenstein 1981 says
+    P(v, i, j) = exp(-b*v) + pi
+
+    """
+    return 999.999
+
 def verify_pileup_df(pileup_df: pd.DataFrame) -> None:
     """ #TODO: STUB! Verifies pileup dataframe and throws ValueError if errors are found. """
     return None
 
-def handheld_pileup_parsing(pileup_filename: str) -> pd.DataFrame:
+def handheld_pileup_parsing(pileup_filename: str) -> List[dict]:
     """ Parses mpileup carefully to avoid errors when first line has empty columns. """
 
     def line_to_record(line: str) -> dict:
@@ -217,7 +242,7 @@ def handheld_pileup_parsing(pileup_filename: str) -> pd.DataFrame:
     if len(contents) == 0:
         logging.warning('No nuclotide locations match criteria in %s.' % pileup_filename)
 
-    return pd.DataFrame(contents)
+    return contents
 
 def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
     """ Returns dataframe with frequencies from pileup file.
@@ -227,7 +252,7 @@ def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
     covered.
     """
 
-    df = handheld_pileup_parsing(pileup_filename)
+    df = pd.DataFrame(handheld_pileup_parsing(pileup_filename))
     df = df[['location', 'reference', 'depth', 'nucleotides']]
 
     verify_pileup_df(df)
@@ -296,6 +321,12 @@ def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
     avg_depth = pd.to_numeric(df.depth).mean()
     num_positions_covered = len(df)
 
+    df['depth'] = df['depth'].astype('int')
+    total_freq = lambda base: df['%s_freq' % base].multiply(df['depth']).sum() / df['depth'].sum()
+    total_freqs = {base: total_freq(base) for base in ['A', 'T', 'C', 'G']}
+    logging.info('In pileup file %s, total base frequencies are: %s' % (pileup_filename, total_freqs))
+    #print(df.head(2))
+
     return df, empty_locations, avg_depth, num_positions_covered
 
 def calculate_average_pairwise_distance(parsed_pileup_df: pd.DataFrame) -> float:
@@ -341,11 +372,13 @@ def add_prediction_to_csv(*args, **kwargs):
                           avg_depth, num_positions_covered,
 
     """
+
     if kwargs:
         assert not args, 'Do not give both key-worded values and values without keywords to be saved.'
         cols = sorted(kwargs.keys())
         values = [str(kwargs[key]) for key in cols]
         if not Path(RESULTS_FILE).is_file():
+            logging.debug('Did not find %s, will create with columns %s.' % (RESULTS_FILE, ' '.join(cols)))
             with open(RESULTS_FILE, mode='w') as f:
                 f.write(','.join(cols) + '\n')
     elif args:
