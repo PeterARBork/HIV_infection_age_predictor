@@ -44,6 +44,7 @@ LOG_FILE = 'age_prediction_for_hiv.log'
 def count_depths():
     """ Counts depths """
     relevant_mpileup_files = get_relevant_mpileup_files()
+    relevant_mpileup_files = relevant_mpileup_files[:50] if len(relevant_mpileup_files) >= 50 else relevant_mpileup_files
     for mpileup in relevant_mpileup_files:
         line_dicts = handheld_pileup_parsing(mpileup)
         try:
