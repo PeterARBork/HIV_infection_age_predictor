@@ -71,37 +71,45 @@ def main():
     relevant_mpileup_files = get_relevant_mpileup_files()
     logging.info('Read %d relevant mpileup files in this folder' % len(relevant_mpileup_files))
 
+    pol_file = 'K03455_2358_5096.fasta'
+    pol_coordinate_offset = 2252
+    logging.info('Reading polymerase sequence to find potential stop codons.')
+    with open(pol_file, 'rt') as f:
+        sequence = f.read().splitlines()[1].strip()
+    pstop_positions = find_potential_stop_codons(sequence, offset=pol_coordinate_offset)
+    pstop_locations = list(set([str(pos[1]) for pos in pstop_positions]))
+    locations = LOCATIONS_TO_INCLUDE + pstop_locations
+    logging.debug('All locations to include: %s' % ', '.join([str(loc) for loc in locations]))
+
     logging.info('Starting calculations on each mpileup file.')
     for mpileup in relevant_mpileup_files:
         logging.info('Now working on %s.' % mpileup)
         identifier = read_identifier(mpileup)
         reference_genome = read_reference_genome(mpileup)
-        (pileup_df, empty_locations,
-         avg_depth, num_positions_covered) = parse_pileup(mpileup)
-
-        if len(empty_locations) != 0:
-            logging.debug('In %s, %d of the relevant locations had zero depth '
-                          '(%d were covered with %.2f average depth).'
-                          % (mpileup, len(empty_locations), num_positions_covered, avg_depth))
+        (pileup_df, avg_depth, num_positions_covered) = parse_pileup(mpileup, locations)
 
         try:
-            average_hamming_distance, predicted_age = predict_age(pileup_df)
+            pileup_for_distance = pileup_df[pileup_df.location.isin(LOCATIONS_TO_INCLUDE)]
+            (average_pairwise_distance,
+             predicted_age) = predict_age(pileup_for_distance)
         except Exception as e:
-            logging.error('File %s gave error: %s.' % (mpileup, e.args))
+            logging.error('File %s gave error when calculating average pairwise distance: %s.' % (mpileup, e.args))
             continue
 
-        try:
-            jc_time = calculate_jcdistance(pileup_df)
-        except Exception as e:
-            logging.error('File %s gave error: %s.' % (mpileup, e.args))
-            jc_time=0.0
+        #try:
+        pileup_for_jc = pileup_df[pileup_df.location.isin(pstop_locations)]
+        assert len(pileup_for_jc) > 0, 'No positions for JC calculation in %s' % ', '.join(pstop_locations)
+        jc_time = calculate_jcdistance(pileup_for_jc, pstop_positions)
+        #except Exception as e:
+        #    logging.error('File %s gave error when calculating JC time: %s.' % (mpileup, e.args))
+        #    jc_time=np.nan
 
         add_prediction_to_csv(identifier=identifier, reference=reference_genome,
-                              avg_hamming=average_hamming_distance, age=predicted_age,
+                              avg_hamming=average_pairwise_distance, age=predicted_age,
                               avg_depth=avg_depth, num_pos_covered=num_positions_covered,
                               jc_time=jc_time)
         logging.info('Predicted age %s from Hamming distance %.3f for identifier %s (reference %s).'
-                     % (predicted_age, average_hamming_distance, identifier, reference_genome))
+                     % (predicted_age, average_pairwise_distance, identifier, reference_genome))
 
     logging.info('Completed all calculations, now finishing in good form.')
     return 0
@@ -170,8 +178,12 @@ def predict_age(pileup_data: pd.DataFrame):
     
     return average_hamming, predicted_age
 
-def calculate_jcdistance(pileup_df: pd.DataFrame) -> float:
+def calculate_jcdistance(pileup_df: pd.DataFrame, pstop_positions: List[tuple]) -> float:
     """ Calculates days since infection using Jukes-Cantor 1969.
+
+    IMPORTANT: Feed only positions which can become stop-codons with a single nucleotide change and which are more than
+    5% from the end of their proteins, in order to be consistent with the Cuevas et al 2015 method, which provides
+    the estimate of mutation rate.
 
     In the Jules-Cantor model, the frequency of mutants at a given location is
     f = (3/4) - (3/4) * exp(-mu * t),
@@ -193,15 +205,32 @@ def calculate_jcdistance(pileup_df: pd.DataFrame) -> float:
     :return: Years since infected averaged over all locations
     """
     pileup_df = pileup_df[pileup_df['reference'].isin(['A', 'C', 'T', 'G'])]
-    ref_freq = lambda row: row['%s_freq' % row['reference']]
-    pileup_df['ref_freq'] = pileup_df.apply(ref_freq, axis=1)
 
-    mu = (4 / 3) * 9.3 * 10**(-5) / 1.2
+    def stop_codon_frequency(row):
+        stop_bases = list(filter(lambda pos: str(pos[1]) == row.location, pstop_positions))
+        stop_bases = [pstop[0] for pstop in stop_bases]
+        assert len(stop_bases) > 0, 'stop bases is: %s' % stop_bases
+        freq = 0
+        for stop_base in stop_bases:
+            freq += row['%s_freq' % stop_base]
+
+        return freq
+
+    pileup_df['mutation_freq'] = pileup_df.apply(stop_codon_frequency, axis=1)
+
+    mutation_freq = pileup_df['mutation_freq'].mean()
+    logging.debug('mutation frequency is: %5.f', mutation_freq)
+    #assert mutation_freq > 0, 'mutation freq is %.3f, head is:\n%s' % (mutation_freq, pileup_df.head())
+
+    # we need to divide the Cuevas mutation rate with 72/23 because this is the ratio of all mutations on potential
+    # stop sites to actual stop-mutations
+    mu = (4 / 3) * 9.3 * (10**(-5) / (72/23)) / 1.2
     jc_t = lambda f: -(1/mu) * np.log(1 - (4 / 3) * f) / 365
-    jc_filter = lambda f: jc_t(f) if jc_t(f) < np.inf else np.nan
-    pileup_df['jc_t'] = pileup_df['ref_freq'].apply(jc_filter)
 
-    avg_jc_t = pileup_df['jc_t'].mean()
+    #jc_filter = lambda f: jc_t(f) if jc_t(f) < np.inf else np.nan
+    #pileup_df['jc_t'] = pileup_df['mutation_freq'].apply(jc_filter)
+
+    avg_jc_t = jc_t(mutation_freq)
 
     return avg_jc_t
 
@@ -220,7 +249,7 @@ def verify_pileup_df(pileup_df: pd.DataFrame) -> None:
     """ #TODO: STUB! Verifies pileup dataframe and throws ValueError if errors are found. """
     return None
 
-def handheld_pileup_parsing(pileup_filename: str) -> List[dict]:
+def handheld_pileup_parsing(pileup_filename: str, locations_to_include) -> List[dict]:
     """ Parses mpileup carefully to avoid errors when first line has empty columns. """
 
     def line_to_record(line: str) -> dict:
@@ -233,7 +262,7 @@ def handheld_pileup_parsing(pileup_filename: str) -> List[dict]:
         return {col_name: value for col_name, value in zip(col_names, values)}
 
     def location_filter(record: dict):
-        location_criteria = record.get('location', 'missing') in LOCATIONS_TO_INCLUDE
+        location_criteria = record.get('location', 'missing') in locations_to_include
         content_criteria = len(record.get('nucleotides', '')) > 0 and len(record.get('qualities', '')) > 0
         return True if location_criteria and content_criteria else False
 
@@ -245,7 +274,7 @@ def handheld_pileup_parsing(pileup_filename: str) -> List[dict]:
 
     return contents
 
-def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
+def parse_pileup(pileup_filename: str, locations_to_include: List[str]) -> (pd.DataFrame, pd.Series):
     """ Returns dataframe with frequencies from pileup file.
 
     :param pileup_filename: string filename.
@@ -253,7 +282,7 @@ def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
     covered.
     """
 
-    df = pd.DataFrame(handheld_pileup_parsing(pileup_filename))
+    df = pd.DataFrame(handheld_pileup_parsing(pileup_filename, locations_to_include))
     df = df[['location', 'reference', 'depth', 'nucleotides']]
 
     verify_pileup_df(df)
@@ -261,10 +290,6 @@ def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
     logging.debug('Out of (%d - %d) / %d = %d  expected bases in pol, we have %d bases covered in the pileup.'
                   % (POL_END, POL_START, 3, (POL_END - POL_START) / 3, sum(df.location.isin(LOCATIONS_TO_INCLUDE ))))
 
-    # keep only 3rd base in codons
-    df = df[df.location.isin(LOCATIONS_TO_INCLUDE)]
-    empty_locations = list(set(LOCATIONS_TO_INCLUDE) - set(df.location.unique()))
-    df = df.dropna(subset=['nucleotides'])
 
     # Keep only valid reference letters.
     bad_ref_locations = df.location[~df.reference.isin(['A', 'C', 'G', 'T', 'a', 'c', 'g', 't'])]
@@ -326,9 +351,8 @@ def parse_pileup(pileup_filename: str) -> (pd.DataFrame, pd.Series):
     total_freq = lambda base: df['%s_freq' % base].multiply(df['depth']).sum() / df['depth'].sum()
     total_freqs = {base: total_freq(base) for base in ['A', 'T', 'C', 'G']}
     logging.info('In pileup file %s, total base frequencies are: %s' % (pileup_filename, total_freqs))
-    #print(df.head(2))
 
-    return df, empty_locations, avg_depth, num_positions_covered
+    return df, avg_depth, num_positions_covered
 
 def calculate_average_pairwise_distance(parsed_pileup_df: pd.DataFrame) -> float:
     """ Predicts average pairwise distance on dataframe from pileup file.
@@ -357,9 +381,9 @@ def calculate_average_pairwise_distance(parsed_pileup_df: pd.DataFrame) -> float
 
     parsed_pileup_df['hamming'] = parsed_pileup_df.apply(calculate_summand, axis=1)
 
-    average_hamming_distance = sum(parsed_pileup_df['hamming']) / len(parsed_pileup_df)
+    average_pairwise_distance = sum(parsed_pileup_df['hamming']) / len(parsed_pileup_df)
 
-    return average_hamming_distance
+    return average_pairwise_distance
 
 def add_prediction_to_csv(*args, **kwargs):
     """ Adds prediction to predicted_ages.csv in same folder as this script.
@@ -369,7 +393,7 @@ def add_prediction_to_csv(*args, **kwargs):
     :return: None
 
     identifier: str, reference_genome: str,
-                          average_hamming_distance: float, predicted_age: float,
+                          average_pairwise_distance: float, predicted_age: float,
                           avg_depth, num_positions_covered,
 
     """
@@ -393,6 +417,42 @@ def add_prediction_to_csv(*args, **kwargs):
         f.write(observation + '\n')
 
     return None
+
+def find_potential_stop_codons(protein_coding_nucleotides: str, offset = 0) -> List[dict]:
+    """ Returns list of dicts with {position: nucleotide which creates stop codon}.
+
+    Important: This function removes the last 5% of the coding region provided, so don't do this yourself first.
+
+    :param protein_coding_nucleotides: Sequence of nucleotides, the complete coding sequence for a given protein.
+    :return: list of dictionaries {position: nucleotide which creates stop codon}
+    """
+    logging.debug('Starting to determine potential stop-codon locations.')
+    pns = protein_coding_nucleotides
+    assert len(pns) % 3 == 0, 'open reading frame must have length divisible by 3.'
+    num_codons = len(pns) // 3
+    logging.debug('There are %d codons.' % num_codons)
+    num_codons_to_cut = num_codons // 20
+    logging.debug('We will cut %d codons.' % num_codons_to_cut)
+    num_nucleotides_to_cut = num_codons_to_cut * 3
+    logging.debug('We will cut %d nucleotides.' % num_nucleotides_to_cut)
+    pns = pns[:-num_nucleotides_to_cut] if num_codons_to_cut > 0 else pns# removes last 5% of codons
+    assert len(pns) % 3 == 0, 'Error in code created open reading frame with length not divisible by 3.'
+    logging.debug('Having cut off the end, we now use:\n%s' % pns)
+
+    pstop_codons = {'TGC': [('A', 3)], 'AAG': [('T', 1)], 'TTG': [('A', 2)], 'TCA': [('G', 2), ('A', 2)],
+                    'TAT': [('G', 3), ('A', 3)], 'TAC': [('G', 3), ('A', 3)], 'TTA': [('A', 2), ('G', 2)],
+                    'TGG': [('A', 2), ('A', 3)], 'GGA': [('T', 1)], 'CAG': [('T', 1)], 'CAA': [('T', 1)],
+                    'AAA': [('T', 1)], 'TCG': [('A', 2)], 'AGA': [('T', 1)], 'GAA': [('T', 1)], 'GAG': [('T', 1)],
+                    'CGA': [('T', 1)], 'TGT': [('A', 3)]}
+
+    pstop_positions = []
+    for codon_num in range(0, len(pns) // 3):
+        codon = pns[codon_num*3:codon_num*3 + 3]
+        for match in pstop_codons.get(codon, []):
+            pstop_positions.append((match[0], codon_num*3 + match[1] + offset))
+
+    return pstop_positions
+
 
 if __name__ == '__main__':
     main()
