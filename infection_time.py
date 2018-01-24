@@ -35,12 +35,20 @@ from tsi_filehandling import (get_relevant_mpileup_files, parse_pileup_to_contig
                               add_prediction_to_csv, get_relevant_mpileup_files, read_identifier, read_reference_genome)
 
 
+# Puller et al. method parameters
 SLOPE = 250.28
 INTERCEPT = -0.08
 THRESHOLD = 0.0
+MIN_DEPTH = 200
+
+# pol-gene region
 POL_START = 2253
 POL_END = 5096
 POL_LOCATIONS = [loc for loc in list(range(POL_START, POL_END))]
+
+# Model parameters, see Cuevas et al 2015 "Extremely High Mutation Rate of HIV-1 In Vivo."
+MUTATION_RATE = 9.3 * 10**(-5)
+
 RESULTS_FILE = 'predicted_ages.csv'
 LOG_FILE = 'age_prediction_for_hiv.log'
 
@@ -68,8 +76,9 @@ def main():
         contig = parse_pileup_to_contig(mpileup, start=POL_START, end=POL_END)
 
         locations_for_corr_method = POL_LOCATIONS[2::3]
-        pileup_for_correlation = pileup_df_for_correlation(contig,
-                                                           locations_for_corr_method)
+        pileup_for_correlation = pileup_df_for_correlation(contig, locations_for_corr_method)
+        pileup_for_correlation = pileup_for_correlation[pileup_for_correlation['tidy_bases'].str.len() > MIN_DEPTH]
+        num_locs_for_correlation = len(pileup_for_correlation)
 
         try:
             (average_pairwise_distance,
@@ -79,11 +88,13 @@ def main():
             average_pairwise_distance = np.nan
             predicted_age = np.nan
 
-        tsi_g, tsi_years = estimate_patient_tsi(contig)
+        tsi_g, tsi_years, p0, pg, qtc_mean, qct_mean, num_loc_model = estimate_patient_tsi(contig)
 
         add_prediction_to_csv(identifier=identifier, reference=reference_genome,
                               avg_hamming=average_pairwise_distance, age=predicted_age,
-                              g_model=tsi_g, years_model=tsi_years)
+                              g_model=tsi_g, years_model=tsi_years, p0=p0, pg=pg, qtc=qtc_mean,
+                              qct=qct_mean, num_loc_corr=num_locs_for_correlation, corr_min_depth=MIN_DEPTH,
+                              num_loc_model=num_loc_model)
         logging.info('Predicted age %s from Hamming distance %.3f for identifier %s (reference %s).'
                      % (predicted_age, average_pairwise_distance, identifier, reference_genome))
 
@@ -187,7 +198,7 @@ def estimate_generations(pg: float, qtc: float, qct: float,
     :return: float estimated generation number between original virus and current.
     :raises ValueError: if pg is less than equilibrium level.
     """
-    logging.debug('Estimating generations with parameters qtc: %.3f, qct: %.3f, p0: %.3f, pg: %.3f'
+    logging.debug('Estimating generations with parameters qtc: %.5f, qct: %.5f, p0: %.3f, pg: %.3f'
                   % (qtc, qct, p0, pg))
     if qtc == 0.0 or qct == 0.0 or p0 == 0.0:
         logging.warning('qtc (%.3f), qct (%.3f) or p0 (%.3f) given as 0. Will estimate nan generations.' % (qtc, qct, p0))
@@ -200,7 +211,7 @@ def estimate_generations(pg: float, qtc: float, qct: float,
         raise ValueError('Estimating generation number with mutation frequency less '
                          'than equilibrium is not possible.\n Mutation frequency given '
                          'is pg = %.2f, whereas equilibrium is %.2f. Other values are '
-                         'qtc (%.3f), qct (%.3f) and p0 (%.3f).' % (pg, p_equilibrium, qtc, qct, p0))
+                         'qtc (%.5f), qct (%.5f) and p0 (%.3f).' % (pg, p_equilibrium, qtc, qct, p0))
 
     return -(1 / (qtc + qct)) * np.log(log_arg)
 
@@ -251,7 +262,7 @@ def estimate_qtc(codons_contig: List[str], qct) -> (float, float, float):
     qtc = r * qct
     return qtc
 
-def estimate_patient_tsi(contig: List[dict]) -> (float, float):
+def estimate_patient_tsi(contig: List[dict], days_per_generation=1.2) -> (float, float):
     """ Returns tuple of mean, min and max estimates of time since infection (generations).
 
     The pileup list of dictionaries must include keys A_freq, T_freq etc, and must cover
@@ -272,32 +283,27 @@ def estimate_patient_tsi(contig: List[dict]) -> (float, float):
         logging.error('Could not find start codon in given sequence:\n%s' % s0)
 
     codons = codonify(contig)
-    qct_mean = estimate_qct(codons)
+    qct_mean = MUTATION_RATE or estimate_qct(codons)
     codon_strings = [c.codon_string for c in codons]
-    qtc_mean = estimate_qtc(codon_strings, qct=qct_mean)
+    qtc_mean = MUTATION_RATE or estimate_qtc(codon_strings, qct=qct_mean)
 
-    p0 = codon_strings.count('TAC') / (codon_strings.count('TAT') + codon_strings.count('TAC'))
-    srd_codons = [codon for codon in codons if codon.codon_string in ['TAC', 'TAT']]
-    tac_codons = [codon for codon in codons if codon.codon_string == 'TAC']
-    pgs = [codon.third.get('C_freq', 0) / (codon.third.get('C_freq', 0) + codon.third.get('T_freq', 0))
-           for codon in srd_codons]
-    num_C = sum([codon.third.get('C_freq', 0) * len(codon.third.get('tidy_bases', ''))
-                 for codon in srd_codons])
-    num_T = sum([codon.third.get('T_freq', 0) * len(codon.third.get('tidy_bases', ''))
-                 for codon in srd_codons])
     p0 = 1.0
-    pg_mean = np.mean([codon.third.get('C_freq') for codon in tac_codons])
+    tac_codons = [codon for codon in codons
+                  if codon.codon_string == 'TAC' and len(codon.third['tidy_bases']) > MIN_DEPTH]
+    pgs = [codon.third['C_freq'] / (codon.third['C_freq'] + codon.third['T_freq'])
+           for codon in tac_codons]
+    pg = sum(pgs) / len(pgs)
 
     try:
-        g_mean = estimate_generations(pg_mean, qtc_mean, qct_mean, p0)
+        g_mean = estimate_generations(pg, qtc_mean, qct_mean, p0)
     except Exception as e:
         print('p0: ', p0)
         print('qct: ', qct_mean)
         print('qtc: ', qtc_mean)
-        print('pg: ', pg_mean)
+        print('pg: ', pg)
         raise e
 
-    return g_mean, (g_mean * 1.2) / 365
+    return g_mean, (g_mean * days_per_generation) / 365, p0, pg, qtc_mean, qct_mean, len(tac_codons)
 
 if __name__ == '__main__':
     main()
