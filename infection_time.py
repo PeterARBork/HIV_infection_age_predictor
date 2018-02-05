@@ -88,13 +88,16 @@ def main():
             average_pairwise_distance = np.nan
             predicted_age = np.nan
 
-        tsi_g, tsi_years, p0, pg, qtc_mean, qct_mean, num_loc_model = estimate_patient_tsi(contig)
+        (tsi_g, tsi_years, p0, pg,
+         qtc_mean, qct_mean,
+         num_loc_model, depths) = estimate_patient_tsi(contig)
 
+        depths = [str(depth) for depth in depths]
         add_prediction_to_csv(identifier=identifier, reference=reference_genome,
                               avg_hamming=average_pairwise_distance, age=predicted_age,
                               g_model=tsi_g, years_model=tsi_years, p0=p0, pg=pg, qtc=qtc_mean,
                               qct=qct_mean, num_loc_corr=num_locs_for_correlation, corr_min_depth=MIN_DEPTH,
-                              num_loc_model=num_loc_model)
+                              num_loc_model=num_loc_model, depths='|'.join(depths))
         logging.info('Predicted age %s from Hamming distance %.3f for identifier %s (reference %s).'
                      % (predicted_age, average_pairwise_distance, identifier, reference_genome))
 
@@ -204,10 +207,10 @@ def estimate_generations(pg: float, qtc: float, qct: float,
         logging.warning('qtc (%.3f), qct (%.3f) or p0 (%.3f) given as 0. Will estimate nan generations.' % (qtc, qct, p0))
         return np.nan
 
-    p_equilibrium = qtc / (qtc + qct)
     log_arg = (pg / p0) - qtc / (p0 * (qtc + qct))
 
     if log_arg < 0.0:
+        p_equilibrium = qtc / (qtc + qct)
         raise ValueError('Estimating generation number with mutation frequency less '
                          'than equilibrium is not possible.\n Mutation frequency given '
                          'is pg = %.2f, whereas equilibrium is %.2f. Other values are '
@@ -290,6 +293,8 @@ def estimate_patient_tsi(contig: List[dict], days_per_generation=1.2) -> (float,
     p0 = 1.0
     tac_codons = [codon for codon in codons
                   if codon.codon_string == 'TAC' and len(codon.third['tidy_bases']) > MIN_DEPTH]
+    depths = [len(codon.third['tidy_bases']) for codon in tac_codons]
+
     pgs = [codon.third['C_freq'] / (codon.third['C_freq'] + codon.third['T_freq'])
            for codon in tac_codons]
     pg = sum(pgs) / len(pgs)
@@ -303,7 +308,7 @@ def estimate_patient_tsi(contig: List[dict], days_per_generation=1.2) -> (float,
         print('pg: ', pg)
         raise e
 
-    return g_mean, (g_mean * days_per_generation) / 365, p0, pg, qtc_mean, qct_mean, len(tac_codons)
+    return g_mean, (g_mean * days_per_generation) / 365, p0, pg, qtc_mean, qct_mean, len(tac_codons), depths
 
 if __name__ == '__main__':
     main()
