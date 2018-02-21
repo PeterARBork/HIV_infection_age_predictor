@@ -43,26 +43,26 @@ def is_filename_relevant(filename: str):
     :return: True if filename if it looks right.
     """
     # XXX-XXXX-X_cleaned_map_ZZZZZ.mpileup
-    dash_split = filename.split('-')
-    if len(dash_split) != 3:
-        return False
-    elif filename.split('.')[1] != 'mpileup':
-        return False
-    elif '_cleaned_map_' not in filename:
-        return False
-    else:
-        return True
+    return True if 'pileup' in filename else False
+    #dash_split = filename.split('-')
+    #if len(dash_split) != 3:
+    #    return False
+    #elif filename.split('.')[1] != 'mpileup':
+    #    return False
+    #elif '_cleaned_map_' not in filename:
+    #    return False
+    #else:
+    #    return True
 
 def read_identifier(mpileup_filename: str):
     """ Returns identifer from filename.
-
-    :param mpileup_filename: string filename (without path).
-    :return: string identifier (XXX-XXXX-X, each X being a digit)
     """
-    first_two = mpileup_filename.split('-')[0:2]
-    third = mpileup_filename.split('-')[2][0]
-
-    return '-'.join(first_two) + '-' + third
+    if len(mpileup_filename.split()) > 2:
+        first_two = mpileup_filename.split('-')[0:2]
+        third = mpileup_filename.split('-')[2][0]
+        return mpileup_filename.split('.')[0]
+    else:
+        return mpileup_filename.split('.')[0]
 
 def read_reference_genome(mpileup_filename: str):
     """ Returns reference genome from filename.

@@ -236,14 +236,14 @@ def s0_sequence(pileup: List[dict]):
 
 def codonify(contig: List[dict], s0=None):
     from collections import namedtuple
-    Codon = namedtuple('Codon', ['codon_string', 'first', 'second', 'third'])
+    Codon = namedtuple('Codon', ['codon_string', 'first', 'second', 'third', 'codon_pos'])
     codons = []
     for first_loc in range(0, len(contig), 3):
         codon_string = s0_sequence(contig[first_loc: min(first_loc + 3, len(contig))])
         first = contig[first_loc]
         second = contig[first_loc + 1] if first_loc + 1 < len(contig) else dict
         third = contig[first_loc + 2] if first_loc + 2 < len(contig) else dict
-        codons.append(Codon(codon_string, first, second, third))
+        codons.append(Codon(codon_string, first, second, third, first_loc))
 
     return codons
 
@@ -257,21 +257,28 @@ def estimate_qct(codons: List) -> (float, List[int], int):
     caa_codons = [codon for codon in sdcc_codons if codon.codon_string == 'CAA']
     cga_codons = [codon for codon in sdcc_codons if codon.codon_string == 'CGA']
 
+    if len(cga_codons + caa_codons + cga_codons) < 1:
+        raise ValueError('Could not find any SDCC codons')
+
     cag_depths = [str(len(codon.first['tidy_bases'])) for codon in cag_codons]
     caa_depths = [str(len(codon.first['tidy_bases'])) for codon in caa_codons]
     cga_depths = [str(len(codon.first['tidy_bases'])) for codon in cga_codons]
 
+    outliers = [codon.first['T_freq'] for codon in caa_codons if codon.first['T_freq'] > 0.01]
+    print('There are %d outliers with mean %.3f' % (len(outliers), np.mean(outliers)))
+
+
     cag_estimates = [codon.first['T_freq'] for codon in cag_codons]
-    caa_estimates = [codon.first['T_freq'] for codon in caa_codons]
+    caa_estimates = [codon.first['T_freq'] for codon in caa_codons if codon.first['T_freq'] < 0.01]
     cga_estimates = [codon.first['T_freq'] for codon in cga_codons]
 
-    cag_qct_mean = sum(cag_estimates) / len(cag_estimates)
-    caa_qct_mean = sum(caa_estimates) / len(caa_estimates)
-    cga_qct_mean = sum(cga_estimates) / len(cga_estimates)
+    cag_qct_mean = sum(cag_estimates) / len(cag_estimates) if len(cag_estimates) > 0 else 0
+    caa_qct_mean = sum(caa_estimates) / len(caa_estimates) if len(caa_estimates) > 0 else 0
+    cga_qct_mean = sum(cga_estimates) / len(cga_estimates) if len(cga_estimates) > 0 else 0
 
-    results = {'death_freq_cag': cag_qct_mean, 'cag_depths': '|'.join(cag_depths),
-               'death_freq_caa': caa_qct_mean, 'caa_depths': '|'.join(caa_depths),
-               'death_freq_cga': cga_qct_mean, 'cga_depths': '|'.join(cga_depths)}
+    results = {'death_freq_cag': cag_qct_mean, 'cag_depths': '|'.join(cag_depths), 'num_cag': len(cag_estimates),
+               'death_freq_caa': caa_qct_mean, 'caa_depths': '|'.join(caa_depths), 'num_caa': len(caa_estimates),
+               'death_freq_cga': cga_qct_mean, 'cga_depths': '|'.join(cga_depths), 'num_cga': len(cga_estimates)}
 
     qct_mean = (len(cag_estimates)*cag_qct_mean
                 + len(caa_estimates)*caa_qct_mean
