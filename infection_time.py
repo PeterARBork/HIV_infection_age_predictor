@@ -26,8 +26,7 @@ with
 This program is in python version 3, so make sure to use python 3.
 """
 import logging
-from pathlib import Path
-from os import listdir
+from collections import namedtuple
 import pandas as pd
 import numpy as np
 from typing import List
@@ -47,12 +46,24 @@ POL_LOCATIONS = [loc for loc in list(range(POL_START, POL_END))]
 
 # Model parameters, see Cuevas et al 2015 "Extremely High Mutation Rate of HIV-1 In Vivo."
 # Use None to have the program estimate the rates from the data.
-MUTATION_RATE = None # 9.3 * 10**(-5)
 
+MUTATION_RATE = None # 9.3 * 10**(-5)
 MIN_DEPTH = 1000
 
 RESULTS_FILE = 'predicted_ages.csv'
 LOG_FILE = 'age_prediction_for_hiv.log'
+
+# genome-wide modelling regions
+Region = namedtuple('Region', ['title', 'start', 'end', 'initiating_seq'])
+model_regions = [Region('gag', 790, 2292, 'atgggtgcgaga'),
+                 Region('pol', 2358, 5041, 'ATGAGTTTGCCA'), # Really ends at 5096 but sor reading frame starts earlier in different reading frame
+                 Region('sor', 5041, 5559, 'atggaaaacaga'), # Real end at 5619 but overlaps with R so we reduce it. Overlap with pol: we cut the end of pol out.
+                 Region('R', 5559, 5795, 'atggaacaagccc'), # Overlap with sor, so sor gets reduced
+                 Region('tat1', 5831, 6045, 'atggagccagta'), # Two exons, this is the first!
+                 #Region('tat2', 8379, 8424, 'acccacctccca'), # second exon, sub-sequence of trs2 and env
+                 #Region('trs1', 5970, 6045, 'atggcaggaaga'), # overlaps with tat1: pure sub-sequence
+                 #Region('trs2', 8379, 8653, 'acccacctccca'), # overlaps with tat2 and env pure sub-seq of env.
+                 Region('env', 6225, 8795, 'ATGAGAGTGAAG')] # overlaps with tat2 and trs2
 
 
 def main():
@@ -75,32 +86,34 @@ def main():
         logging.info('Now working on %s.' % mpileup)
         identifier = read_identifier(mpileup)
         reference_genome = read_reference_genome(mpileup)
-        contig = parse_pileup_to_contig(mpileup, start=POL_START, end=POL_END)
+        pol_contig = parse_pileup_to_contig(mpileup, start=POL_START, end=POL_END)
 
         locations_for_corr_method = POL_LOCATIONS[2::3]
-        pileup_for_correlation = pileup_df_for_correlation(contig, locations_for_corr_method)
+        pileup_for_correlation = pileup_df_for_correlation(pol_contig, locations_for_corr_method)
         pileup_for_correlation = pileup_for_correlation[pileup_for_correlation['tidy_bases'].str.len() > MIN_DEPTH]
-        num_locs_for_correlation = len(pileup_for_correlation)
 
         try:
             (average_pairwise_distance,
              predicted_age) = predict_age(pileup_for_correlation)
+            results_dict = {'avg_hamming': average_pairwise_distance,
+                            'Corr_age_prediction': predicted_age}
         except Exception as e:
             logging.error('File %s gave error when calculating average pairwise distance: %s.' % (mpileup, e.args))
-            average_pairwise_distance = np.nan
-            predicted_age = np.nan
+            results_dict = {'avg_hamming': np.nan,
+                            'Corr_age_prediction': np.nan}
 
-        try:
-            results_dict = estimate_patient_tsi(contig)
-        except Exception as e:
-            logging.error('File %s gave error when calculating model estimated time: %s.' % (mpileup, e.args))
-            results_dict = {'model_failure': e.args}
+        for region in model_regions:
+            logging.info('Analysing region %s.' % region.title)
+            try:
+                contig = parse_pileup_to_contig(mpileup, start=region.start, end=region.end)
+                region_results = estimate_patient_tsi(contig)
+                results_dict.update({'%s_%s' % (region.title, key): value
+                                     for key, value in region_results.items()})
+            except Exception as e:
+                logging.error('File %s gave error when calculating model estimated time: %s.' % (mpileup, e.args))
+                results_dict.update(model_failure=e.args)
 
-        add_prediction_to_csv(identifier=identifier, reference=reference_genome,
-                              avg_hamming=average_pairwise_distance, age=predicted_age,
-                              **results_dict)
-        logging.info('Predicted age %s from Hamming distance %.3f for identifier %s (reference %s).'
-                     % (predicted_age, average_pairwise_distance, identifier, reference_genome))
+        add_prediction_to_csv(identifier=identifier, reference=reference_genome, **results_dict)
 
     logging.info('Completed all calculations, now finishing in good form.')
     return 0
@@ -265,8 +278,7 @@ def estimate_qct(codons: List) -> (float, List[int], int):
     cga_depths = [str(len(codon.first['tidy_bases'])) for codon in cga_codons]
 
     outliers = [codon.first['T_freq'] for codon in caa_codons if codon.first['T_freq'] > 0.01]
-    print('There are %d outliers with mean %.3f' % (len(outliers), np.mean(outliers)))
-
+    logging.warning('There are %d outliers in CAA estimated death-frequencies with mean %.3f' % (len(outliers), np.mean(outliers)))
 
     cag_estimates = [codon.first['T_freq'] for codon in cag_codons]
     caa_estimates = [codon.first['T_freq'] for codon in caa_codons if codon.first['T_freq'] < 0.01]
@@ -276,9 +288,16 @@ def estimate_qct(codons: List) -> (float, List[int], int):
     caa_qct_mean = sum(caa_estimates) / len(caa_estimates) if len(caa_estimates) > 0 else 0
     cga_qct_mean = sum(cga_estimates) / len(cga_estimates) if len(cga_estimates) > 0 else 0
 
+    cag_std = np.std(cag_estimates)
+    caa_std = np.std(caa_estimates)
+    cga_std = np.std(cga_estimates)
+
     results = {'death_freq_cag': cag_qct_mean, 'cag_depths': '|'.join(cag_depths), 'num_cag': len(cag_estimates),
+               'cag_std': cag_std,
                'death_freq_caa': caa_qct_mean, 'caa_depths': '|'.join(caa_depths), 'num_caa': len(caa_estimates),
-               'death_freq_cga': cga_qct_mean, 'cga_depths': '|'.join(cga_depths), 'num_cga': len(cga_estimates)}
+               'caa_std': caa_std,
+               'death_freq_cga': cga_qct_mean, 'cga_depths': '|'.join(cga_depths), 'num_cga': len(cga_estimates),
+               'cga_std': cga_std}
 
     qct_mean = (len(cag_estimates)*cag_qct_mean
                 + len(caa_estimates)*caa_qct_mean
@@ -324,10 +343,12 @@ def estimate_patient_tsi(contig: List[dict], days_per_generation=1.2) -> (float,
                   if codon.codon_string == 'TAC' and len(codon.third['tidy_bases']) > MIN_DEPTH]
     tac_pgs = [codon.third['C_freq'] / (codon.third['C_freq'] + codon.third['T_freq'])
                for codon in tac_codons]
+    tac_std = np.std(tac_pgs)
     tat_codons = [codon for codon in codons
                   if codon.codon_string == 'TAT' and len(codon.third['tidy_bases']) > MIN_DEPTH]
     tat_pgs = [codon.third['T_freq'] / (codon.third['C_freq'] + codon.third['T_freq'])
                for codon in tat_codons]
+    tat_std = np.std(tat_pgs)
 
     str_g_depths = [str(len(codon.third['tidy_bases'])) for codon in tac_codons + tat_codons]
 
@@ -348,7 +369,7 @@ def estimate_patient_tsi(contig: List[dict], days_per_generation=1.2) -> (float,
     results = {'g_mean': g_mean, 'g_tac': tac_g_mean, 'g_tat': tat_g_mean,
                'num_tat': num_tat, 'num_tac': num_tac, 'model_depths': '|'.join(str_g_depths),
                'p0': p0, 'tat_pg': tat_pg, 'tac_pg': tac_pg,
-               'q_tc': qtc_mean, 'q_ct': qct_mean,
+               'q_tc': qtc_mean, 'q_ct': qct_mean, 'tac_std': tac_std, 'tat_std': tat_std,
                'model_years': round((g_mean * days_per_generation) / 365, 3)}
     results.update(qct_descriptives)
 
